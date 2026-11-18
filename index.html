@@ -116,67 +116,72 @@
       set(k, v) { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) {} }
     };
 
-    let tokenClient = null, accessToken = null, tokenExp = 0, sheetId = null;
+    let accessToken = null, tokenExp = 0, sheetId = null;
 
     function status(msg, isErr) { $('status').textContent = msg; $('status').className = isErr ? 'err' : ''; }
     function loginStatus(msg, isErr) { $('loginStatus').textContent = msg; $('loginStatus').className = isErr ? 'err' : ''; }
 
-    // ================= Google sign-in =================
-    const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
-    let pendingAuth = null;
+    // ================= Google sign-in (full-page redirect, no pop-up) =================
+    // Google sends the person back to this same page with the access token in the address (#access_token=…).
+    const REDIRECT_URI = location.origin + location.pathname.replace(/index\.html$/, '');
+    let authReady = false;
 
     function initAuth() {
       if (CONFIG.GOOGLE_CLIENT_ID.indexOf('PASTE_') === 0) {
         return loginStatus('Setup not finished: the Google Client ID has not been added to this page yet.', true);
       }
-      tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: CONFIG.GOOGLE_CLIENT_ID,
-        scope: SCOPES,
-        callback: r => {
-          const p = pendingAuth; pendingAuth = null;
-          if (!p) return;
-          if (r.error) return p.reject(new Error(r.error_description || r.error));
-          if (!google.accounts.oauth2.hasGrantedAllScopes(r, DRIVE_SCOPE)) {
-            return p.reject(new Error('Please tick the Google Drive box on the permission screen, then try again.'));
-          }
-          accessToken = r.access_token;
-          tokenExp = Date.now() + Number(r.expires_in) * 1000;
-          p.resolve();
-        },
-        error_callback: e => {
-          const p = pendingAuth; pendingAuth = null;
-          if (!p) return;
-          const msg = e.type === 'popup_closed' ? 'Sign-in was cancelled.'
-            : e.type === 'popup_failed_to_open' ? 'The sign-in window was blocked. Allow pop-ups for this site and try again.'
-            : (e.message || e.type || 'Sign-in failed.');
-          p.reject(new Error(msg));
-        }
-      });
+      authReady = true;
       if (store.get('psa_email')) $('signInBtn').textContent = 'Continue as ' + store.get('psa_email');
+      handleRedirect();
     }
 
-    // Must be called directly from a tap so the Google popup isn't blocked.
-    function requestToken() {
-      return new Promise((resolve, reject) => {
-        pendingAuth = { resolve, reject };
-        const hint = store.get('psa_email');
-        tokenClient.requestAccessToken(hint ? { prompt: '', login_hint: hint } : { prompt: 'consent' });
+    function startSignIn() {
+      const state = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      try { sessionStorage.setItem('psa_state', state); } catch (e) {}
+      const p = new URLSearchParams({
+        client_id: CONFIG.GOOGLE_CLIENT_ID, redirect_uri: REDIRECT_URI, response_type: 'token',
+        scope: SCOPES, include_granted_scopes: 'true', state: state
       });
+      const hint = store.get('psa_email');
+      if (hint) p.set('login_hint', hint); else p.set('prompt', 'consent');
+      location.assign('https://accounts.google.com/o/oauth2/v2/auth?' + p.toString());
     }
 
-    $('signInBtn').onclick = async () => {
-      if (!tokenClient) { if (!$('loginStatus').textContent) loginStatus('Still loading — try again in a second.', true); return; }
+    async function handleRedirect() {
+      const h = new URLSearchParams(location.hash.slice(1));
+      if (!h.has('access_token') && !h.has('error')) return;
+      history.replaceState(null, '', location.pathname + location.search);   // take the token out of the address bar
+      let expected = '';
+      try { expected = sessionStorage.getItem('psa_state') || ''; sessionStorage.removeItem('psa_state'); } catch (e) {}
+
+      if (h.get('error')) {
+        return loginStatus(h.get('error') === 'access_denied'
+          ? 'Sign-in was cancelled or access was denied. Tap the button to try again.'
+          : 'Google sign-in error: ' + h.get('error'), true);
+      }
+      if (expected && h.get('state') !== expected) return loginStatus('Sign-in could not be verified. Please try again.', true);
+      if (!(h.get('scope') || '').includes('drive.file')) {
+        return loginStatus('Please tick the Google Drive box on the permission screen, then try again.', true);
+      }
+      accessToken = h.get('access_token');
+      tokenExp = Date.now() + Number(h.get('expires_in') || 3600) * 1000;
       loginStatus('Signing in…');
       try {
-        await requestToken();
         const me = await gfetch('https://www.googleapis.com/oauth2/v3/userinfo');
         store.set('psa_email', me.email);
         loginStatus('Setting up your sheet…');
         sheetId = await findOrCreateSheet();
         showApp(me.email);
+        loginStatus('');
       } catch (e) {
-        loginStatus(e.message, true);
+        if (e.message !== 'Signed out') loginStatus(e.message, true);
       }
+    }
+
+    $('signInBtn').onclick = () => {
+      if (!authReady) { if (!$('loginStatus').textContent) loginStatus('Still loading — try again in a second.', true); return; }
+      loginStatus('Opening Google sign-in…');
+      startSignIn();
     };
 
     $('signOutBtn').onclick = async () => {
@@ -468,7 +473,8 @@
         if (err.message !== 'Signed out') status(err.message, true);
       }
     });
+
+    initAuth();
   </script>
-  <script src="https://accounts.google.com/gsi/client" async defer onload="initAuth()"></script>
 </body>
 </html>
