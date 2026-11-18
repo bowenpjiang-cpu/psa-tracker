@@ -363,7 +363,7 @@
       return out;
     }
 
-    $('shotBtn').onclick = () => $('shot').click();
+    $('shotBtn').onclick = () => { $('card').hidden = true; $('shot').click(); };   // a fresh card: cert comes from the image
     $('readShotBtn').onclick = () => $('shot').click();
     $('shot').addEventListener('change', async e => {
       const file = e.target.files[0];
@@ -388,6 +388,10 @@
       if (current && p.cert && p.cert !== current) {
         return status('That screenshot is for cert #' + p.cert + ', but this card is #' + current + '. Open the matching PSA page and try again.', true);
       }
+      const norm = v => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (current && !p.cert && p.name && $('name').value && norm(p.name) !== norm($('name').value)) {
+        return status("Couldn't read the cert # on that screenshot, and its card name doesn't match this card (#" + current + "). Take a new screenshot of this card's PSA page.", true);
+      }
       const cert = current || p.cert;
       if (!cert) return status("Couldn't read the cert number from that screenshot. Scan the slab or type the cert # first, then read the screenshot.", true);
       if (!current && !(await lookup(cert))) return;
@@ -397,6 +401,7 @@
       if (p.estimate != null) $('estimate').value = p.estimate;
       const missing = [!p.name && 'card name', !p.grade && 'grade', p.estimate == null && 'PSA Estimate'].filter(Boolean);
       const next = $('purchase').value === '' ? 'add the purchase price' : 'update the prices';
+      if (current && !p.cert) missing.push('cert # (check this is the right card)');
       status('Read from screenshot' + (missing.length ? ' — couldn\'t find the ' + missing.join(' or ') + ', please type it in' : '') +
              '. Check the details, ' + next + ' and save.', missing.length > 0);
     }
@@ -483,11 +488,18 @@
         const rows = await readRows();
         const i = rows.findIndex(r => String(r[0]) === cert);
         if (i < 0) {
-          const res = await gfetch(SHEETS + '/' + sheetId + '/values/' + enc(TAB + '!A:J') + ':append?valueInputOption=USER_ENTERED&insertDataOption=OVERWRITE',
-            { method: 'POST', body: JSON.stringify({ values: [["'" + cert, txt(name), txt(grade), num(estimate), num(clEstimate), num(purchase), num(sold), '', today(), sold !== '' ? today() : '']] }) });
-          const m = String((res.updates && res.updates.updatedRange) || '').match(/![A-Z]+(\d+)/);
-          if (m) await gfetch(SHEETS + '/' + sheetId + '/values/' + enc(TAB + '!H' + m[1]) + '?valueInputOption=USER_ENTERED',
-            { method: 'PUT', body: JSON.stringify({ values: [[profitFormula(m[1])]] }) });
+          const colA = (await gfetch(SHEETS + '/' + sheetId + '/values/' + enc(TAB + '!A:A'))).values || [];
+          const row = Math.max(colA.length + 1, 2);           // first row below everything in column A
+          const values = [["'" + cert, txt(name), txt(grade), num(estimate), num(clEstimate), num(purchase), num(sold),
+                           profitFormula(row), today(), sold !== '' ? today() : '']];
+          try {
+            await gfetch(SHEETS + '/' + sheetId + '/values/' + enc(TAB + '!A' + row + ':J' + row) + '?valueInputOption=USER_ENTERED',
+              { method: 'PUT', body: JSON.stringify({ values }) });
+          } catch (err) {
+            if (!/exceeds grid limits/i.test(err.message)) throw err;   // sheet is full: add a row at the end
+            await gfetch(SHEETS + '/' + sheetId + '/values/' + enc(TAB + '!A' + row + ':J' + row) + ':append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS',
+              { method: 'POST', body: JSON.stringify({ values }) });
+          }
         } else {
           const row = i + 2, hadSold = rows[i][6] !== undefined && rows[i][6] !== '';
           const data = [{ range: TAB + '!B' + row + ':H' + row,
