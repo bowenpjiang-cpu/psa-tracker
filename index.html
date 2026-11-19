@@ -325,9 +325,18 @@
       let m = all.match(/^#\s?(\d{7,10})\b/m) || all.match(/Cert\s*Number\s*:?\s*(\d{7,10})/i);
       if (m) out.cert = m[1];
 
-      // Card name = the "Primary Subject" row (PSA's phone layout) or "Subject" row (desktop layout)
+      // Card name = "#<card number> <Primary Subject> <Variety>", e.g. "#218 ROARING MOON ex SPECIAL ART RARE"
       const subj = row('Primary\\s*Subject') || row('Subject');
-      if (subj) out.name = subj;
+      if (subj) {
+        // Card # from its row, else from a title line like "#218 ROARING MOON ex"
+        let num = (row('Card\\s*(?:Number|No\\.?|#)').match(/^#?\s*([A-Z0-9][A-Z0-9\-\/]*)/i) || [])[1] || '';
+        if (!num) {
+          const esc = subj.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          num = (all.match(new RegExp('#\\s?([A-Z0-9][A-Z0-9\\-\\/]*)\\s+' + esc, 'i')) || [])[1] || '';
+        }
+        const variety = row('Variety\\s*/\\s*Pedigree') || row('Variety');
+        out.name = [num && '#' + num, subj, variety].filter(Boolean).join(' ');
+      }
 
       // Otherwise: the big title between "#cert" and the ITEM GRADE box
       const ci = lines.findIndex(l => /^#\s?\d{7,10}$/.test(l));
